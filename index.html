@@ -77,8 +77,14 @@
 參等獎, 10</textarea>
             </div>
 
-            <button id="update-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-xs rounded py-1.5 font-bold transition-all">更新配置</button>
-            <div id="save-status" class="text-[9px] text-center opacity-50"></div>
+            <button id="update-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-xs rounded py-1.5 font-bold transition-all">更新配置 / 抽獎重置</button>
+            
+            <div class="grid grid-cols-2 gap-2 pt-2 border-t border-white/10">
+                <button id="export-btn" class="bg-emerald-600 hover:bg-emerald-500 text-[10px] rounded py-1 font-bold">匯出數據</button>
+                <button id="import-btn" class="bg-orange-600 hover:bg-orange-500 text-[10px] rounded py-1 font-bold">匯入數據</button>
+                <input type="file" id="import-file" class="hidden" accept=".json">
+            </div>
+            <div id="save-status" class="text-[9px] text-center text-emerald-400 opacity-80"></div>
         </div>
     </div>
 
@@ -89,7 +95,7 @@
             <div id="winners-list" class="overflow-y-auto flex-grow space-y-1 pr-1 custom-scrollbar text-xs">
                 <p class="opacity-50 italic text-center">尚未中獎...</p>
             </div>
-            <button id="clear-btn" class="mt-2 text-[10px] text-white/40 hover:text-red-400">清除記錄</button>
+            <button id="clear-btn" class="mt-2 text-[10px] text-white/40 hover:text-red-400">清除獲獎記錄</button>
         </div>
     </div>
 
@@ -133,17 +139,6 @@
 </div>
 
 <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-    // --- Firebase 初始化 ---
-    const firebaseConfig = JSON.parse(__firebase_config);
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
     // --- 初始化變數 ---
     let scene, camera, renderer, world;
     let balls = [];
@@ -152,39 +147,58 @@
     let participants = [];
     let prizes = [];
     let winners = [];
-    let currentUser = null;
 
     let currentStep = 1; // 1: 抽人, 2: 抽獎
     let selectedWinnerName = null;
     let isProcessing = false;
 
-    // --- Firebase 儲存邏輯 ---
-    async function saveState() {
-        if (!currentUser) return;
-        try {
-            const data = { participants, prizes, winners, lastUpdated: Date.now() };
-            // 修正路徑片段數為偶數
-            await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'state', 'lottery'), data);
-            document.getElementById('save-status').innerText = "雲端同步成功 " + new Date().toLocaleTimeString();
-        } catch (e) { console.error("Save Error:", e); }
+    // --- 數據導出導入功能 ---
+    function exportData() {
+        const data = {
+            participants,
+            prizes,
+            winners,
+            exportAt: new Date().toISOString()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lottery_data_${new Date().getTime()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showStatus("數據已導出至檔案");
     }
 
-    async function loadState(user) {
-        try {
-            const snap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'state', 'lottery'));
-            if (snap.exists()) {
-                const data = snap.data();
+    function importData(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const data = JSON.parse(e.target.result);
                 participants = data.participants || [];
                 prizes = data.prizes || [];
                 winners = data.winners || [];
+                
+                // 更新介面文字域
                 document.getElementById('names-input').value = participants.join('\n');
                 document.getElementById('prize-config').value = prizes.map(p => `${p.name}, ${p.total}`).join('\n');
+                
                 renderWinnersList();
-                refreshConfig(false);
+                refreshConfig();
+                showStatus("數據匯入成功！");
+            } catch (err) {
+                alert("匯入失敗：檔案格式不正確");
             }
-        } catch (e) { console.error("Load Error:", e); }
-        document.getElementById('loading-overlay').style.opacity = '0';
-        setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 500);
+        };
+        reader.readAsText(file);
+    }
+
+    function showStatus(msg) {
+        const el = document.getElementById('save-status');
+        el.innerText = msg;
+        setTimeout(() => el.innerText = "", 3000);
     }
 
     // --- 物理與 3D 效果 ---
@@ -204,6 +218,7 @@
         pLight.position.set(5, 10, 5);
         scene.add(pLight);
 
+        // 摸彩機外框
         scene.add(new THREE.Mesh(new THREE.IcosahedronGeometry(6, 1), new THREE.MeshPhongMaterial({
             color: 0xffffff, transparent: true, opacity: 0.1, wireframe: true
         })));
@@ -243,24 +258,28 @@
     }
 
     // --- 遊戲邏輯 ---
-    function refreshConfig(shouldSave = true) {
+    function refreshConfig() {
         const names = document.getElementById('names-input').value.split('\n').map(s=>s.trim()).filter(s=>s);
         participants = names;
 
         const prizeInput = document.getElementById('prize-config').value;
         prizes = prizeInput.split('\n').map(line => {
             const [n, t] = line.split(',').map(s=>s.trim());
-            return { name: n || "禮物", total: parseInt(t) || 0, current: parseInt(t) || 0 };
+            // 如果匯入時已經有 current 則保留，否則設為與 total 相同
+            const total = parseInt(t) || 0;
+            return { name: n || "禮物", total: total, current: total };
         }).filter(p => p.total > 0);
 
+        // 清除舊球
         balls.forEach(b => { world.remove(b.body); scene.remove(b.visual); });
         balls = [];
+        
+        // 只放入尚未得獎的人
         const activeNames = participants.filter(n => !winners.some(w => w.name === n));
         activeNames.forEach(n => balls.push(createVisualBall(n)));
         
         document.getElementById('ball-count-badge').innerText = `球: ${balls.length}`;
         resetToStep1();
-        if (shouldSave) saveState();
     }
 
     function resetToStep1() {
@@ -342,6 +361,7 @@
                 
                 winners.push({ name: selectedWinnerName, prize: prize.name, time: Date.now() });
                 
+                // 物理移除獲獎者的球
                 const ballIdx = balls.findIndex(b => b.name === selectedWinnerName);
                 if (ballIdx > -1) {
                     world.remove(balls[ballIdx].body);
@@ -354,7 +374,6 @@
                 document.getElementById('ball-count-badge').innerText = `球: ${balls.length}`;
                 
                 isProcessing = false;
-                saveState();
                 resetToStep1();
             }, 1500);
         }
@@ -395,39 +414,36 @@
         renderer.render(scene, camera);
     }
 
-    // --- Firebase Auth 監聽 ---
-    onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            currentUser = user;
-            await loadState(user);
-        } else {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
-            }
-        }
-    });
-
     // --- 初始化執行 ---
     window.onload = () => {
         initScene();
         animate();
-        refreshConfig(false);
+        
+        // 隱藏載入畫面
+        document.getElementById('loading-overlay').style.opacity = '0';
+        setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 500);
 
-        document.getElementById('update-btn').onclick = () => refreshConfig(true);
+        refreshConfig();
+
+        document.getElementById('update-btn').onclick = () => refreshConfig();
         document.getElementById('main-action-btn').onclick = handleMainAction;
         document.getElementById('close-modal').onclick = () => {
             document.getElementById('result-modal').classList.add('opacity-0', 'pointer-events-none');
             document.getElementById('modal-content').classList.add('scale-75');
         };
+        
         document.getElementById('clear-btn').onclick = () => {
-            if (confirm("清除紀錄並重置獎項數量？")) {
+            if (confirm("是否清除所有獲獎記錄？此操作不可復原。")) {
                 winners = [];
                 renderWinnersList();
-                refreshConfig(true);
+                refreshConfig();
             }
         };
+
+        // 導出導入按鈕
+        document.getElementById('export-btn').onclick = exportData;
+        document.getElementById('import-btn').onclick = () => document.getElementById('import-file').click();
+        document.getElementById('import-file').onchange = importData;
 
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
