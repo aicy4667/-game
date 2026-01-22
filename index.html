@@ -265,9 +265,10 @@
         const prizeInput = document.getElementById('prize-config').value;
         prizes = prizeInput.split('\n').map(line => {
             const [n, t] = line.split(',').map(s=>s.trim());
-            // 如果匯入時已經有 current 則保留，否則設為與 total 相同
             const total = parseInt(t) || 0;
-            return { name: n || "禮物", total: total, current: total };
+            // 尋找是否已有該獎項的記錄（匯入用）
+            const existing = prizes.find(p => p.name === n);
+            return { name: n || "禮物", total: total, current: (existing ? existing.current : total) };
         }).filter(p => p.total > 0);
 
         // 清除舊球
@@ -326,10 +327,16 @@
             btn.disabled = true;
             btn.innerText = "正在尋找幸運兒...";
             
-            balls.forEach(b => b.body.velocity.set((Math.random()-0.5)*30, 25, (Math.random()-0.5)*30));
+            // 視覺攪拌效果
+            balls.forEach(b => b.body.velocity.set((Math.random()-0.5)*40, 30, (Math.random()-0.5)*40));
             
             setTimeout(() => {
-                if (balls.length === 0) return;
+                if (balls.length === 0) {
+                    isProcessing = false;
+                    btn.disabled = false;
+                    btn.innerText = "名單已空";
+                    return;
+                }
                 const idx = Math.floor(Math.random() * balls.length);
                 const winnerBall = balls[idx];
                 goToStep2(winnerBall.name);
@@ -352,6 +359,7 @@
                 if (pool.length === 0) {
                     alert("沒有獎項了！");
                     isProcessing = false;
+                    resetToStep1();
                     return;
                 }
 
@@ -361,7 +369,7 @@
                 
                 winners.push({ name: selectedWinnerName, prize: prize.name, time: Date.now() });
                 
-                // 物理移除獲獎者的球
+                // 從 3D 場景中物理移除獲獎者的球
                 const ballIdx = balls.findIndex(b => b.name === selectedWinnerName);
                 if (ballIdx > -1) {
                     world.remove(balls[ballIdx].body);
@@ -425,7 +433,14 @@
 
         refreshConfig();
 
-        document.getElementById('update-btn').onclick = () => refreshConfig();
+        document.getElementById('update-btn').onclick = () => {
+            if(confirm("重置將會清除所有數據，確定嗎？")) {
+                winners = [];
+                renderWinnersList();
+                refreshConfig();
+            }
+        };
+        
         document.getElementById('main-action-btn').onclick = handleMainAction;
         document.getElementById('close-modal').onclick = () => {
             document.getElementById('result-modal').classList.add('opacity-0', 'pointer-events-none');
