@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>奇異生技-年終大抽獎統</title>
+    <title>年終大抽獎 - 幸運兒抽獎系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
@@ -49,7 +49,7 @@
     <!-- 標題 -->
     <div class="p-4 text-center">
         <h1 class="text-3xl font-bold text-yellow-400 drop-shadow-lg tracking-widest uppercase">Lucky Person First Draw</h1>
-        <p class="text-white opacity-80 text-sm">先抽人，再抽獎！</p>
+        <p class="text-white opacity-80 text-sm">先抽人，再抽獎！系統會自動過濾已獲獎者</p>
     </div>
 
     <!-- 左側設定 -->
@@ -70,14 +70,14 @@
             </div>
 
             <div class="space-y-1">
-                <label class="text-xs font-bold text-yellow-400">2. 獎項池 (剩餘數量)</label>
+                <label class="text-xs font-bold text-yellow-400">2. 獎項池 (獎項, 剩餘數量)</label>
                 <textarea id="prize-config" rows="3" class="w-full bg-white/10 border border-white/30 rounded px-2 py-1 text-[10px] outline-none focus:border-yellow-400" placeholder="格式：獎項, 數量">特等獎, 1
 壹等獎, 2
 貳等獎, 5
 參等獎, 10</textarea>
             </div>
 
-            <button id="update-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-xs rounded py-1.5 font-bold transition-all">更新配置 / 抽獎重置</button>
+            <button id="update-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-xs rounded py-1.5 font-bold transition-all">更新配置 (不重置剩餘量)</button>
             
             <div class="grid grid-cols-2 gap-2 pt-2 border-t border-white/10">
                 <button id="export-btn" class="bg-emerald-600 hover:bg-emerald-500 text-[10px] rounded py-1 font-bold">匯出數據</button>
@@ -95,7 +95,7 @@
             <div id="winners-list" class="overflow-y-auto flex-grow space-y-1 pr-1 custom-scrollbar text-xs">
                 <p class="opacity-50 italic text-center">尚未中獎...</p>
             </div>
-            <button id="clear-btn" class="mt-2 text-[10px] text-white/40 hover:text-red-400">清除獲獎記錄</button>
+            <button id="clear-btn" class="mt-2 text-[10px] text-white/40 hover:text-red-400">清除並徹底重置</button>
         </div>
     </div>
 
@@ -181,12 +181,9 @@
                 prizes = data.prizes || [];
                 winners = data.winners || [];
                 
-                // 更新介面文字域
-                document.getElementById('names-input').value = participants.join('\n');
-                document.getElementById('prize-config').value = prizes.map(p => `${p.name}, ${p.total}`).join('\n');
-                
+                updateInputsFromState();
                 renderWinnersList();
-                refreshConfig();
+                refreshConfig(true); // 強制重新同步球體
                 showStatus("數據匯入成功！");
             } catch (err) {
                 alert("匯入失敗：檔案格式不正確");
@@ -199,6 +196,11 @@
         const el = document.getElementById('save-status');
         el.innerText = msg;
         setTimeout(() => el.innerText = "", 3000);
+    }
+
+    function updateInputsFromState() {
+        document.getElementById('names-input').value = participants.join('\n');
+        document.getElementById('prize-config').value = prizes.map(p => `${p.name}, ${p.current}`).join('\n');
     }
 
     // --- 物理與 3D 效果 ---
@@ -218,7 +220,6 @@
         pLight.position.set(5, 10, 5);
         scene.add(pLight);
 
-        // 摸彩機外框
         scene.add(new THREE.Mesh(new THREE.IcosahedronGeometry(6, 1), new THREE.MeshPhongMaterial({
             color: 0xffffff, transparent: true, opacity: 0.1, wireframe: true
         })));
@@ -258,24 +259,32 @@
     }
 
     // --- 遊戲邏輯 ---
-    function refreshConfig() {
+    function refreshConfig(forceReset = false) {
+        // 更新人名
         const names = document.getElementById('names-input').value.split('\n').map(s=>s.trim()).filter(s=>s);
         participants = names;
 
-        const prizeInput = document.getElementById('prize-config').value;
-        prizes = prizeInput.split('\n').map(line => {
-            const [n, t] = line.split(',').map(s=>s.trim());
-            const total = parseInt(t) || 0;
-            // 尋找是否已有該獎項的記錄（匯入用）
-            const existing = prizes.find(p => p.name === n);
-            return { name: n || "禮物", total: total, current: (existing ? existing.current : total) };
-        }).filter(p => p.total > 0);
+        // 更新獎項 - 修復點：不要每次都將 current 設為 total
+        const prizeLines = document.getElementById('prize-config').value.split('\n').filter(l => l.trim());
+        const newPrizes = prizeLines.map(line => {
+            const parts = line.split(',');
+            const name = parts[0].trim();
+            const count = parseInt(parts[1]) || 0;
+            
+            // 嘗試尋找現有獎項以保留其 current 剩餘數量
+            const existing = prizes.find(p => p.name === name);
+            if (existing && !forceReset) {
+                return { name: name, total: count, current: Math.min(existing.current, count) };
+            } else {
+                return { name: name, total: count, current: count };
+            }
+        }).filter(p => p.total > 0 || p.current > 0);
+        
+        prizes = newPrizes;
 
-        // 清除舊球
+        // 清除球體並重新根據名單生成
         balls.forEach(b => { world.remove(b.body); scene.remove(b.visual); });
         balls = [];
-        
-        // 只放入尚未得獎的人
         const activeNames = participants.filter(n => !winners.some(w => w.name === n));
         activeNames.forEach(n => balls.push(createVisualBall(n)));
         
@@ -311,10 +320,13 @@
         document.getElementById('lucky-name-display').innerText = luckyName;
         document.getElementById('current-lucky-person').classList.remove('opacity-0');
         
+        // 檢查是否還有獎項
         const totalPrizesLeft = prizes.reduce((acc, p) => acc + p.current, 0);
         if (totalPrizesLeft <= 0) {
-            btn.innerText = "獎項已抽完";
+            btn.innerText = "無獎項可用";
             btn.disabled = true;
+        } else {
+            btn.disabled = false;
         }
     }
 
@@ -325,23 +337,21 @@
             isProcessing = true;
             const btn = document.getElementById('main-action-btn');
             btn.disabled = true;
-            btn.innerText = "正在尋找幸運兒...";
+            btn.innerText = "正在抽幸運兒...";
             
-            // 視覺攪拌效果
             balls.forEach(b => b.body.velocity.set((Math.random()-0.5)*40, 30, (Math.random()-0.5)*40));
             
             setTimeout(() => {
                 if (balls.length === 0) {
                     isProcessing = false;
-                    btn.disabled = false;
-                    btn.innerText = "名單已空";
+                    btn.disabled = true;
+                    btn.innerText = "已無候選人";
                     return;
                 }
                 const idx = Math.floor(Math.random() * balls.length);
                 const winnerBall = balls[idx];
                 goToStep2(winnerBall.name);
                 isProcessing = false;
-                btn.disabled = false;
             }, 2000);
 
         } else if (currentStep === 2) {
@@ -357,7 +367,7 @@
                 });
                 
                 if (pool.length === 0) {
-                    alert("沒有獎項了！");
+                    alert("抽獎池已空！請檢查獎項數量。");
                     isProcessing = false;
                     resetToStep1();
                     return;
@@ -369,7 +379,7 @@
                 
                 winners.push({ name: selectedWinnerName, prize: prize.name, time: Date.now() });
                 
-                // 從 3D 場景中物理移除獲獎者的球
+                // 物理移除球
                 const ballIdx = balls.findIndex(b => b.name === selectedWinnerName);
                 if (ballIdx > -1) {
                     world.remove(balls[ballIdx].body);
@@ -377,6 +387,8 @@
                     balls.splice(ballIdx, 1);
                 }
 
+                participants = participants.filter(n => n !== selectedWinnerName);
+                updateInputsFromState();
                 showResult(selectedWinnerName, prize.name);
                 renderWinnersList();
                 document.getElementById('ball-count-badge').innerText = `球: ${balls.length}`;
@@ -402,9 +414,9 @@
             return;
         }
         container.innerHTML = winners.map(w => `
-            <div class="bg-white/10 p-2 rounded border-l-4 border-yellow-500 flex justify-between">
+            <div class="bg-white/10 p-2 rounded border-l-4 border-yellow-500 flex justify-between items-center">
                 <span class="font-bold">${w.name}</span>
-                <span class="text-yellow-400">${w.prize}</span>
+                <span class="text-yellow-400 font-bold">${w.prize}</span>
             </div>
         `).reverse().join('');
     }
@@ -422,23 +434,18 @@
         renderer.render(scene, camera);
     }
 
-    // --- 初始化執行 ---
     window.onload = () => {
         initScene();
         animate();
         
-        // 隱藏載入畫面
         document.getElementById('loading-overlay').style.opacity = '0';
         setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 500);
 
         refreshConfig();
 
         document.getElementById('update-btn').onclick = () => {
-            if(confirm("重置將會清除所有數據，確定嗎？")) {
-                winners = [];
-                renderWinnersList();
-                refreshConfig();
-            }
+            refreshConfig(false); // 正常更新，保留目前抽獎進度
+            showStatus("配置已更新");
         };
         
         document.getElementById('main-action-btn').onclick = handleMainAction;
@@ -448,14 +455,14 @@
         };
         
         document.getElementById('clear-btn').onclick = () => {
-            if (confirm("是否清除所有獲獎記錄？此操作不可復原。")) {
+            if (confirm("這將清除所有獲獎記錄並重置所有獎項數量。確定嗎？")) {
                 winners = [];
                 renderWinnersList();
-                refreshConfig();
+                refreshConfig(true); // 強制重置
+                updateInputsFromState();
             }
         };
 
-        // 導出導入按鈕
         document.getElementById('export-btn').onclick = exportData;
         document.getElementById('import-btn').onclick = () => document.getElementById('import-file').click();
         document.getElementById('import-file').onchange = importData;
